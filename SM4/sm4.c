@@ -47,14 +47,6 @@ static void store_be32(uint32_t value, uint8_t out[4]) {
     out[3] = (uint8_t)value;
 }
 
-static uint32_t tau(uint32_t value) {
-    uint8_t a0 = SM4_SBOX[(value >> 24) & 0xff];
-    uint8_t a1 = SM4_SBOX[(value >> 16) & 0xff];
-    uint8_t a2 = SM4_SBOX[(value >> 8) & 0xff];
-    uint8_t a3 = SM4_SBOX[value & 0xff];
-    return ((uint32_t)a0 << 24) | ((uint32_t)a1 << 16) | ((uint32_t)a2 << 8) | a3;
-}
-
 static uint32_t l_transform(uint32_t value) {
     return value ^ rotl32(value, 2) ^ rotl32(value, 10) ^ rotl32(value, 18) ^ rotl32(value, 24);
 }
@@ -63,11 +55,50 @@ static uint32_t l_prime_transform(uint32_t value) {
     return value ^ rotl32(value, 13) ^ rotl32(value, 23);
 }
 
-static uint32_t round_function(uint32_t x0, uint32_t x1, uint32_t x2, uint32_t x3, uint32_t rk) {
-    return x0 ^ l_transform(tau(x1 ^ x2 ^ x3 ^ rk));
+static uint32_t SM4_T0[256];
+static uint32_t SM4_T1[256];
+static uint32_t SM4_T2[256];
+static uint32_t SM4_T3[256];
+static uint32_t SM4_TK0[256];
+static uint32_t SM4_TK1[256];
+static uint32_t SM4_TK2[256];
+static uint32_t SM4_TK3[256];
+static int SM4_TABLES_READY = 0;
+
+static void sm4_init_tables(void) {
+    if (SM4_TABLES_READY) {
+        return;
+    }
+    for (int i = 0; i < 256; ++i) {
+        uint32_t s = SM4_SBOX[i];
+        uint32_t v0 = s << 24;
+        uint32_t v1 = s << 16;
+        uint32_t v2 = s << 8;
+        uint32_t v3 = s;
+        SM4_T0[i] = l_transform(v0);
+        SM4_T1[i] = l_transform(v1);
+        SM4_T2[i] = l_transform(v2);
+        SM4_T3[i] = l_transform(v3);
+        SM4_TK0[i] = l_prime_transform(v0);
+        SM4_TK1[i] = l_prime_transform(v1);
+        SM4_TK2[i] = l_prime_transform(v2);
+        SM4_TK3[i] = l_prime_transform(v3);
+    }
+    SM4_TABLES_READY = 1;
+}
+
+static inline uint32_t sm4_t(uint32_t value) {
+    return SM4_T0[(value >> 24) & 0xff] ^ SM4_T1[(value >> 16) & 0xff]
+        ^ SM4_T2[(value >> 8) & 0xff] ^ SM4_T3[value & 0xff];
+}
+
+static inline uint32_t sm4_tk(uint32_t value) {
+    return SM4_TK0[(value >> 24) & 0xff] ^ SM4_TK1[(value >> 16) & 0xff]
+        ^ SM4_TK2[(value >> 8) & 0xff] ^ SM4_TK3[value & 0xff];
 }
 
 void sm4_set_encrypt_key(sm4_key *key, const uint8_t raw_key[16]) {
+    sm4_init_tables();
     uint32_t k[36];
     k[0] = load_be32(raw_key) ^ SM4_FK[0];
     k[1] = load_be32(raw_key + 4) ^ SM4_FK[1];
@@ -76,7 +107,7 @@ void sm4_set_encrypt_key(sm4_key *key, const uint8_t raw_key[16]) {
 
     for (size_t i = 0; i < 32; ++i) {
         uint32_t temp = k[i + 1] ^ k[i + 2] ^ k[i + 3] ^ SM4_CK[i];
-        k[i + 4] = k[i] ^ l_prime_transform(tau(temp));
+        k[i + 4] = k[i] ^ sm4_tk(temp);
         key->rk[i] = k[i + 4];
     }
 }
@@ -90,20 +121,29 @@ void sm4_set_decrypt_key(sm4_key *key, const uint8_t raw_key[16]) {
 }
 
 void sm4_encrypt_block(const sm4_key *key, const uint8_t in[16], uint8_t out[16]) {
-    uint32_t x[36];
-    x[0] = load_be32(in);
-    x[1] = load_be32(in + 4);
-    x[2] = load_be32(in + 8);
-    x[3] = load_be32(in + 12);
+    sm4_init_tables();
+    uint32_t x0 = load_be32(in);
+    uint32_t x1 = load_be32(in + 4);
+    uint32_t x2 = load_be32(in + 8);
+    uint32_t x3 = load_be32(in + 12);
 
-    for (size_t i = 0; i < 32; ++i) {
-        x[i + 4] = round_function(x[i], x[i + 1], x[i + 2], x[i + 3], key->rk[i]);
+#define SM4_ROUND(a, b, c, d, rk) do { \
+        (a) ^= sm4_t((b) ^ (c) ^ (d) ^ (rk)); \
+    } while (0)
+
+    for (size_t i = 0; i < 32; i += 4) {
+        SM4_ROUND(x0, x1, x2, x3, key->rk[i]);
+        SM4_ROUND(x1, x2, x3, x0, key->rk[i + 1]);
+        SM4_ROUND(x2, x3, x0, x1, key->rk[i + 2]);
+        SM4_ROUND(x3, x0, x1, x2, key->rk[i + 3]);
     }
 
-    store_be32(x[35], out);
-    store_be32(x[34], out + 4);
-    store_be32(x[33], out + 8);
-    store_be32(x[32], out + 12);
+#undef SM4_ROUND
+
+    store_be32(x3, out);
+    store_be32(x2, out + 4);
+    store_be32(x1, out + 8);
+    store_be32(x0, out + 12);
 }
 
 void sm4_decrypt_block(const sm4_key *key, const uint8_t in[16], uint8_t out[16]) {
