@@ -437,10 +437,28 @@ int rsa_generate_key(rsa_keypair *keypair, size_t bits) {
             continue;
         }
 
+        crypto_bn dp;
+        crypto_bn dq;
+        crypto_bn qinv;
+        if (!crypto_bn_mod(&dp, &d, &p_minus_one)) {
+            return 0;
+        }
+        if (!crypto_bn_mod(&dq, &d, &q_minus_one)) {
+            return 0;
+        }
+        if (!rsa_bn_mod_inv(&qinv, &q, &p)) {
+            continue;
+        }
+
         crypto_bn_copy(&keypair->pub.n, &n);
         crypto_bn_copy(&keypair->pub.e, &e);
         crypto_bn_copy(&keypair->priv.n, &n);
         crypto_bn_copy(&keypair->priv.d, &d);
+        crypto_bn_copy(&keypair->priv.p, &p);
+        crypto_bn_copy(&keypair->priv.q, &q);
+        crypto_bn_copy(&keypair->priv.dp, &dp);
+        crypto_bn_copy(&keypair->priv.dq, &dq);
+        crypto_bn_copy(&keypair->priv.qinv, &qinv);
         return 1;
     }
 }
@@ -460,5 +478,33 @@ int rsa_private(const rsa_private_key *key, crypto_bn *out, const crypto_bn *in)
     }
     crypto_bn base;
     crypto_bn_mod(&base, in, &key->n);
-    return crypto_bn_mod_exp(out, &base, &key->d, &key->n);
+    crypto_bn m1;
+    crypto_bn m2;
+    if (!crypto_bn_mod_exp(&m1, &base, &key->dp, &key->p)) {
+        return 0;
+    }
+    if (!crypto_bn_mod_exp(&m2, &base, &key->dq, &key->q)) {
+        return 0;
+    }
+
+    crypto_bn diff;
+    if (crypto_bn_cmp(&m1, &m2) >= 0) {
+        crypto_bn_sub(&diff, &m1, &m2);
+    } else {
+        crypto_bn tmp;
+        crypto_bn_sub(&tmp, &m2, &m1);
+        crypto_bn_sub(&diff, &key->p, &tmp);
+    }
+
+    crypto_bn h;
+    if (!crypto_bn_mod_mul(&h, &key->qinv, &diff, &key->p)) {
+        return 0;
+    }
+
+    crypto_bn hq;
+    if (!crypto_bn_mul(&hq, &h, &key->q)) {
+        return 0;
+    }
+    crypto_bn_add(out, &m2, &hq);
+    return 1;
 }
