@@ -197,14 +197,7 @@ static void sm2_bn_random_range(sm2_bn *r, const sm2_bn *max) {
     sm2_random_bytes(buf, sizeof(buf));
     sm2_bn_from_bytes(r, buf);
     sm2_bn_mod_simple(r, r, max);
-    uint64_t sum = (uint64_t)r->v[0] + 1;
-    r->v[0] = (uint32_t)sum;
-    uint64_t carry = sum >> 32;
-    for (int i = 1; i < SM2_BN_WORDS && carry; ++i) {
-        sum = (uint64_t)r->v[i] + carry;
-        r->v[i] = (uint32_t)sum;
-        carry = sum >> 32;
-    }
+    sm2_bn_add_u32(r, r, 1, max);
 }
 
 static void sm2_kdf(uint8_t *out, size_t out_len, const uint8_t *z, size_t z_len) {
