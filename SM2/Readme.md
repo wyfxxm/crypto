@@ -5,13 +5,13 @@
 - **密钥生成**：`sm2_generate_key`
 - **签名 / 验签**：`sm2_sign` / `sm2_verify`
 - **加密 / 解密**：`sm2_encrypt` / `sm2_decrypt`
-- **自实现大数运算**：`sm2_bn.c/h`
+- **大数运算**：复用 `bn/crypto_bn.c/h`
 - **SM3 哈希**：`sm3.c/h`（用于 KDF 与加密校验）
 
 ## 目录结构
 
 - `sm2.h` / `sm2.c`：SM2 主逻辑（曲线运算、签名、验签、加解密）
-- `sm2_bn.h` / `sm2_bn.c`：256 位大数基础运算
+- `sm2_bn.h`：256 位大数接口（基于 `bn/crypto_bn.c/h`）
 - `sm3.h` / `sm3.c`：SM3 哈希实现
 
 ## 说明
@@ -23,5 +23,5 @@
 ## 编译示例
 
 ```bash
-gcc -O2 -Wall -Wextra -c sm2.c sm2_bn.c sm3.c
+gcc -O2 -Wall -Wextra -I../bn -c sm2.c ../bn/crypto_bn.c sm3.c
 ```
