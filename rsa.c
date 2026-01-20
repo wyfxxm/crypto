@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define RSA_MAX_BYTES (CRYPTO_BN_MAX_WORDS * 8)
 
@@ -40,11 +39,7 @@ static int rsa_random_bytes(uint8_t *out, size_t len) {
         fclose(fp);
         return read_len == len;
     }
-    srand((unsigned)time(NULL));
-    for (size_t i = 0; i < len; ++i) {
-        out[i] = (uint8_t)(rand() & 0xFF);
-    }
-    return 1;
+    return 0;
 }
 
 static void rsa_bn_shift_left(crypto_bn *r, const crypto_bn *a, size_t shift) {
@@ -356,19 +351,22 @@ static int rsa_bn_mod_inv(crypto_bn *out, const crypto_bn *a, const crypto_bn *m
     return 1;
 }
 
-static void rsa_bn_random_bits(crypto_bn *r, size_t bits) {
+static int rsa_bn_random_bits(crypto_bn *r, size_t bits) {
     size_t bytes = (bits + 7) / 8;
     uint8_t buf[CRYPTO_BN_MAX_WORDS * 8];
     if (bytes > sizeof(buf)) {
         bytes = sizeof(buf);
     }
-    rsa_random_bytes(buf, bytes);
+    if (!rsa_random_bytes(buf, bytes)) {
+        return 0;
+    }
     if (bits > 0) {
         size_t top_bit = (bits - 1) % 8;
         buf[0] |= (uint8_t)(1u << top_bit);
     }
     buf[bytes - 1] |= 1u;
     crypto_bn_from_bytes(r, buf, bytes);
+    return 1;
 }
 
 static int rsa_is_probable_prime(const crypto_bn *n, int rounds) {
@@ -417,7 +415,9 @@ static int rsa_is_probable_prime(const crypto_bn *n, int rounds) {
 
     for (int i = 0; i < rounds; ++i) {
         crypto_bn a;
-        rsa_bn_random_bits(&a, n_bits);
+        if (!rsa_bn_random_bits(&a, n_bits)) {
+            return 0;
+        }
         crypto_bn_mod(&a, &a, &n_minus_three);
         rsa_bn_add_u64(&a, &a, 2);
 
@@ -453,8 +453,26 @@ static int rsa_generate_prime(crypto_bn *prime, size_t bits) {
         return 0;
     }
     for (;;) {
-        rsa_bn_random_bits(prime, bits);
+        if (!rsa_bn_random_bits(prime, bits)) {
+            return 0;
+        }
         if (rsa_is_probable_prime(prime, 8)) {
+            return 1;
+        }
+    }
+}
+
+static int rsa_bn_random_range(crypto_bn *r, const crypto_bn *max) {
+    size_t bits = crypto_bn_bit_length(max);
+    if (bits == 0) {
+        return 0;
+    }
+    for (;;) {
+        if (!rsa_bn_random_bits(r, bits)) {
+            return 0;
+        }
+        crypto_bn_mod(r, r, max);
+        if (!crypto_bn_is_zero(r)) {
             return 1;
         }
     }
@@ -550,12 +568,47 @@ int rsa_private(const rsa_private_key *key, crypto_bn *out, const crypto_bn *in)
     }
     crypto_bn base;
     crypto_bn_mod(&base, in, &key->n);
-    crypto_bn m1;
-    crypto_bn m2;
-    if (!crypto_bn_mod_exp(&m1, &base, &key->dp, &key->p)) {
+    crypto_bn p_minus_one;
+    crypto_bn q_minus_one;
+    crypto_bn phi;
+    rsa_bn_sub_u64(&p_minus_one, &key->p, 1);
+    rsa_bn_sub_u64(&q_minus_one, &key->q, 1);
+    if (!crypto_bn_mul(&phi, &p_minus_one, &q_minus_one)) {
         return 0;
     }
-    if (!crypto_bn_mod_exp(&m2, &base, &key->dq, &key->q)) {
+    crypto_bn e;
+    if (!rsa_bn_mod_inv(&e, &key->d, &phi)) {
+        return 0;
+    }
+    crypto_bn r;
+    crypto_bn gcd;
+    do {
+        if (!rsa_bn_random_range(&r, &key->n)) {
+            return 0;
+        }
+        if (!rsa_bn_gcd(&gcd, &r, &key->n)) {
+            return 0;
+        }
+        crypto_bn one;
+        rsa_bn_from_u64(&one, 1);
+        if (crypto_bn_cmp(&gcd, &one) == 0) {
+            break;
+        }
+    } while (1);
+    crypto_bn r_pow_e;
+    if (!crypto_bn_mod_exp(&r_pow_e, &r, &e, &key->n)) {
+        return 0;
+    }
+    crypto_bn blinded;
+    if (!crypto_bn_mod_mul(&blinded, &base, &r_pow_e, &key->n)) {
+        return 0;
+    }
+    crypto_bn m1;
+    crypto_bn m2;
+    if (!crypto_bn_mod_exp(&m1, &blinded, &key->dp, &key->p)) {
+        return 0;
+    }
+    if (!crypto_bn_mod_exp(&m2, &blinded, &key->dq, &key->q)) {
         return 0;
     }
 
@@ -577,7 +630,15 @@ int rsa_private(const rsa_private_key *key, crypto_bn *out, const crypto_bn *in)
     if (!crypto_bn_mul(&hq, &h, &key->q)) {
         return 0;
     }
-    crypto_bn_add(out, &m2, &hq);
+    crypto_bn m_blinded;
+    crypto_bn_add(&m_blinded, &m2, &hq);
+    crypto_bn r_inv;
+    if (!rsa_bn_mod_inv(&r_inv, &r, &key->n)) {
+        return 0;
+    }
+    if (!crypto_bn_mod_mul(out, &m_blinded, &r_inv, &key->n)) {
+        return 0;
+    }
     return 1;
 }
 

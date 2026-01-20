@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <time.h>
 
 static int sm2_params_initialized = 0;
 static sm2_bn SM2_P;
@@ -87,6 +86,55 @@ static int sm2_point_is_infinity(const sm2_point *p) {
     return p->infinity;
 }
 
+static void sm2_point_cswap(sm2_point *a, sm2_point *b, uint32_t swap) {
+    uint64_t mask = 0u - (uint64_t)swap;
+    for (size_t i = 0; i < CRYPTO_BN_MAX_WORDS; ++i) {
+        uint64_t t = mask & (a->x.v[i] ^ b->x.v[i]);
+        a->x.v[i] ^= t;
+        b->x.v[i] ^= t;
+        t = mask & (a->y.v[i] ^ b->y.v[i]);
+        a->y.v[i] ^= t;
+        b->y.v[i] ^= t;
+    }
+    size_t mask_words = (size_t)mask;
+    size_t t_words = mask_words & (a->x.words ^ b->x.words);
+    a->x.words ^= t_words;
+    b->x.words ^= t_words;
+    t_words = mask_words & (a->y.words ^ b->y.words);
+    a->y.words ^= t_words;
+    b->y.words ^= t_words;
+    int t_inf = (int)(mask & (uint64_t)(a->infinity ^ b->infinity));
+    a->infinity ^= t_inf;
+    b->infinity ^= t_inf;
+}
+
+static int sm2_point_is_on_curve(const sm2_point *p) {
+    if (sm2_point_is_infinity(p)) {
+        return 0;
+    }
+    sm2_bn y2;
+    sm2_bn x2;
+    sm2_bn x3;
+    sm2_bn ax;
+    sm2_bn rhs;
+    sm2_bn_mod_mul(&y2, &p->y, &p->y, &SM2_P);
+    sm2_bn_mod_mul(&x2, &p->x, &p->x, &SM2_P);
+    sm2_bn_mod_mul(&x3, &x2, &p->x, &SM2_P);
+    sm2_bn_mod_mul(&ax, &SM2_A, &p->x, &SM2_P);
+    sm2_bn_add_mod(&rhs, &x3, &ax, &SM2_P);
+    sm2_bn_add_mod(&rhs, &rhs, &SM2_B, &SM2_P);
+    return sm2_bn_cmp(&y2, &rhs) == 0;
+}
+
+static int sm2_point_is_valid(const sm2_point *p) {
+    if (!sm2_point_is_on_curve(p)) {
+        return 0;
+    }
+    sm2_point check;
+    sm2_point_mul(&check, p, &SM2_N);
+    return sm2_point_is_infinity(&check);
+}
+
 static void sm2_point_double(sm2_point *r, const sm2_point *p) {
     if (sm2_point_is_infinity(p) || sm2_bn_is_zero(&p->y)) {
         sm2_point_set_infinity(r);
@@ -163,19 +211,18 @@ static void sm2_point_add(sm2_point *r, const sm2_point *p, const sm2_point *q) 
 }
 
 static void sm2_point_mul(sm2_point *r, const sm2_point *p, const sm2_bn *k) {
-    sm2_point result;
-    sm2_point addend;
-    sm2_point_set_infinity(&result);
-    sm2_point_copy(&addend, p);
-
-    int bits = sm2_bn_bit_length(k);
-    for (int i = bits - 1; i >= 0; --i) {
-        sm2_point_double(&result, &result);
-        if (sm2_bn_get_bit(k, i)) {
-            sm2_point_add(&result, &result, &addend);
-        }
+    sm2_point r0;
+    sm2_point r1;
+    sm2_point_set_infinity(&r0);
+    sm2_point_copy(&r1, p);
+    for (int i = (SM2_BN_BYTES * 8) - 1; i >= 0; --i) {
+        uint32_t bit = (uint32_t)sm2_bn_get_bit(k, i);
+        sm2_point_cswap(&r0, &r1, bit);
+        sm2_point_add(&r0, &r0, &r1);
+        sm2_point_double(&r1, &r1);
+        sm2_point_cswap(&r0, &r1, bit);
     }
-    sm2_point_copy(r, &result);
+    sm2_point_copy(r, &r0);
 }
 
 static int sm2_random_bytes(uint8_t *out, size_t len) {
@@ -185,19 +232,18 @@ static int sm2_random_bytes(uint8_t *out, size_t len) {
         fclose(fp);
         return read_len == len;
     }
-    srand((unsigned)time(NULL));
-    for (size_t i = 0; i < len; ++i) {
-        out[i] = (uint8_t)(rand() & 0xFF);
-    }
-    return 1;
+    return 0;
 }
 
-static void sm2_bn_random_range(sm2_bn *r, const sm2_bn *max) {
+static int sm2_bn_random_range(sm2_bn *r, const sm2_bn *max) {
     uint8_t buf[32];
-    sm2_random_bytes(buf, sizeof(buf));
+    if (!sm2_random_bytes(buf, sizeof(buf))) {
+        return 0;
+    }
     sm2_bn_from_bytes(r, buf);
     sm2_bn_mod_simple(r, r, max);
     sm2_bn_add_u32(r, r, 1, max);
+    return 1;
 }
 
 static void sm2_kdf(uint8_t *out, size_t out_len, const uint8_t *z, size_t z_len) {
@@ -237,7 +283,9 @@ int sm2_generate_key(sm2_key *key) {
         return 0;
     }
     sm2_init_params();
-    sm2_bn_random_range(&key->d, &SM2_N_MINUS_1);
+    if (!sm2_bn_random_range(&key->d, &SM2_N_MINUS_1)) {
+        return 0;
+    }
     sm2_point_mul(&key->public_key, &SM2_G, &key->d);
     return 1;
 }
@@ -247,12 +295,17 @@ int sm2_sign(const sm2_key *key, const uint8_t e[32], uint8_t r[32], uint8_t s[3
         return 0;
     }
     sm2_init_params();
+    if (!sm2_point_is_valid(&key->public_key)) {
+        return 0;
+    }
     sm2_bn e_bn;
     sm2_bn_from_bytes(&e_bn, e);
 
     while (1) {
         sm2_bn k;
-        sm2_bn_random_range(&k, &SM2_N_MINUS_1);
+        if (!sm2_bn_random_range(&k, &SM2_N_MINUS_1)) {
+            return 0;
+        }
         sm2_point p1;
         sm2_point_mul(&p1, &SM2_G, &k);
         sm2_bn r_bn;
@@ -289,6 +342,9 @@ int sm2_verify(const sm2_point *pub, const uint8_t e[32], const uint8_t r[32], c
         return 0;
     }
     sm2_init_params();
+    if (!sm2_point_is_valid(pub)) {
+        return 0;
+    }
     sm2_bn r_bn;
     sm2_bn s_bn;
     sm2_bn e_bn;
@@ -325,18 +381,24 @@ int sm2_encrypt(const sm2_point *pub, const uint8_t *msg, size_t msg_len, uint8_
         return 0;
     }
     sm2_init_params();
-    size_t total_len = 65 + 32 + msg_len;
-    uint8_t *buf = (uint8_t *)malloc(total_len);
-    if (!buf) {
+    if (!sm2_point_is_valid(pub)) {
         return 0;
     }
-    uint8_t *c1 = buf;
-    uint8_t *c3 = buf + 65;
-    uint8_t *c2 = buf + 65 + 32;
-
+    size_t total_len = 65 + 32 + msg_len;
     while (1) {
+        uint8_t *buf = (uint8_t *)malloc(total_len);
+        if (!buf) {
+            return 0;
+        }
+        uint8_t *c1 = buf;
+        uint8_t *c3 = buf + 65;
+        uint8_t *c2 = buf + 65 + 32;
+
         sm2_bn k;
-        sm2_bn_random_range(&k, &SM2_N_MINUS_1);
+        if (!sm2_bn_random_range(&k, &SM2_N_MINUS_1)) {
+            free(buf);
+            return 0;
+        }
         sm2_point c1_point;
         sm2_point_mul(&c1_point, &SM2_G, &k);
         sm2_point s;
@@ -357,6 +419,7 @@ int sm2_encrypt(const sm2_point *pub, const uint8_t *msg, size_t msg_len, uint8_
         memcpy(z + 32, y2, 32);
         if (!sm2_kdf_nonzero(t, msg_len, z, sizeof(z))) {
             free(t);
+            free(buf);
             continue;
         }
         for (size_t i = 0; i < msg_len; ++i) {
@@ -401,6 +464,9 @@ int sm2_decrypt(const sm2_key *key, const uint8_t *in, size_t in_len, uint8_t **
     sm2_bn_from_bytes(&c1_point.x, c1 + 1);
     sm2_bn_from_bytes(&c1_point.y, c1 + 33);
     c1_point.infinity = 0;
+    if (!sm2_point_is_valid(&c1_point)) {
+        return 0;
+    }
 
     sm2_point s;
     sm2_point_mul(&s, &c1_point, &key->d);
