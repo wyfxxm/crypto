@@ -17,6 +17,11 @@ typedef struct {
 typedef struct {
     crypto_bn n;
     crypto_bn d;
+    crypto_bn p;
+    crypto_bn q;
+    crypto_bn dp;
+    crypto_bn dq;
+    crypto_bn qinv;
 } rsa_private_key;
 
 typedef struct {
