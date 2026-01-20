@@ -6,6 +6,8 @@
 #include <string.h>
 #include <time.h>
 
+#define RSA_MAX_BYTES (CRYPTO_BN_MAX_WORDS * 8)
+
 typedef struct {
     int sign;
     crypto_bn mag;
@@ -97,6 +99,76 @@ static void rsa_bn_set_bit(crypto_bn *r, size_t bit) {
     if (word + 1 > r->words) {
         r->words = word + 1;
     }
+}
+
+static int rsa_bn_from_bytes_checked(crypto_bn *r, const uint8_t *in, size_t len) {
+    if (!in || len == 0 || len > RSA_MAX_BYTES) {
+        return 0;
+    }
+    return crypto_bn_from_bytes(r, in, len);
+}
+
+static int rsa_bn_to_bytes_checked(const crypto_bn *a, uint8_t *out, size_t len) {
+    if (!a || !out || len == 0 || len > RSA_MAX_BYTES) {
+        return 0;
+    }
+    crypto_bn_to_bytes(a, out, len);
+    return 1;
+}
+
+static size_t rsa_bn_byte_len(const crypto_bn *a) {
+    size_t bits = crypto_bn_bit_length(a);
+    return bits == 0 ? 1 : (bits + 7) / 8;
+}
+
+static int rsa_load_public_key_bytes(rsa_public_key *dst, const rsa_public_key_bytes *src) {
+    if (!dst || !src || src->n_len == 0 || src->e_len == 0) {
+        return 0;
+    }
+    if (src->n_len > RSA_MAX_BYTES || src->e_len > RSA_MAX_BYTES) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->n, src->n, src->n_len)) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->e, src->e, src->e_len)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int rsa_load_private_key_bytes(rsa_private_key *dst, const rsa_private_key_bytes *src) {
+    if (!dst || !src || src->n_len == 0 || src->d_len == 0 || src->p_len == 0 ||
+        src->q_len == 0 || src->dp_len == 0 || src->dq_len == 0 || src->qinv_len == 0) {
+        return 0;
+    }
+    if (src->n_len > RSA_MAX_BYTES || src->d_len > RSA_MAX_BYTES || src->p_len > RSA_MAX_BYTES ||
+        src->q_len > RSA_MAX_BYTES || src->dp_len > RSA_MAX_BYTES || src->dq_len > RSA_MAX_BYTES ||
+        src->qinv_len > RSA_MAX_BYTES) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->n, src->n, src->n_len)) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->d, src->d, src->d_len)) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->p, src->p, src->p_len)) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->q, src->q, src->q_len)) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->dp, src->dp, src->dp_len)) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->dq, src->dq, src->dq_len)) {
+        return 0;
+    }
+    if (!crypto_bn_from_bytes(&dst->qinv, src->qinv, src->qinv_len)) {
+        return 0;
+    }
+    return 1;
 }
 
 static int rsa_bn_divmod(crypto_bn *q, crypto_bn *r, const crypto_bn *a, const crypto_bn *b) {
@@ -507,4 +579,105 @@ int rsa_private(const rsa_private_key *key, crypto_bn *out, const crypto_bn *in)
     }
     crypto_bn_add(out, &m2, &hq);
     return 1;
+}
+
+int rsa_public_key_to_bytes(const rsa_public_key *key, rsa_public_key_bytes *out) {
+    if (!key || !out) {
+        return 0;
+    }
+    size_t n_len = rsa_bn_byte_len(&key->n);
+    size_t e_len = rsa_bn_byte_len(&key->e);
+    if (n_len > RSA_MAX_BYTES || e_len > RSA_MAX_BYTES) {
+        return 0;
+    }
+    memset(out->n, 0, sizeof(out->n));
+    memset(out->e, 0, sizeof(out->e));
+    out->n_len = n_len;
+    out->e_len = e_len;
+    return rsa_bn_to_bytes_checked(&key->n, out->n, out->n_len) &&
+           rsa_bn_to_bytes_checked(&key->e, out->e, out->e_len);
+}
+
+int rsa_private_key_to_bytes(const rsa_private_key *key, rsa_private_key_bytes *out) {
+    if (!key || !out) {
+        return 0;
+    }
+    size_t n_len = rsa_bn_byte_len(&key->n);
+    size_t d_len = rsa_bn_byte_len(&key->d);
+    size_t p_len = rsa_bn_byte_len(&key->p);
+    size_t q_len = rsa_bn_byte_len(&key->q);
+    size_t dp_len = rsa_bn_byte_len(&key->dp);
+    size_t dq_len = rsa_bn_byte_len(&key->dq);
+    size_t qinv_len = rsa_bn_byte_len(&key->qinv);
+    if (n_len > RSA_MAX_BYTES || d_len > RSA_MAX_BYTES || p_len > RSA_MAX_BYTES ||
+        q_len > RSA_MAX_BYTES || dp_len > RSA_MAX_BYTES || dq_len > RSA_MAX_BYTES ||
+        qinv_len > RSA_MAX_BYTES) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    out->n_len = n_len;
+    out->d_len = d_len;
+    out->p_len = p_len;
+    out->q_len = q_len;
+    out->dp_len = dp_len;
+    out->dq_len = dq_len;
+    out->qinv_len = qinv_len;
+    return rsa_bn_to_bytes_checked(&key->n, out->n, out->n_len) &&
+           rsa_bn_to_bytes_checked(&key->d, out->d, out->d_len) &&
+           rsa_bn_to_bytes_checked(&key->p, out->p, out->p_len) &&
+           rsa_bn_to_bytes_checked(&key->q, out->q, out->q_len) &&
+           rsa_bn_to_bytes_checked(&key->dp, out->dp, out->dp_len) &&
+           rsa_bn_to_bytes_checked(&key->dq, out->dq, out->dq_len) &&
+           rsa_bn_to_bytes_checked(&key->qinv, out->qinv, out->qinv_len);
+}
+
+int rsa_public_bytes(const rsa_public_key_bytes *key, uint8_t *out, size_t out_len,
+                     const uint8_t *in, size_t in_len) {
+    if (!key || !out || !in) {
+        return 0;
+    }
+    if (key->n_len == 0 || key->e_len == 0 || key->n_len > RSA_MAX_BYTES ||
+        key->e_len > RSA_MAX_BYTES) {
+        return 0;
+    }
+    if (in_len == 0 || in_len > key->n_len || out_len < key->n_len) {
+        return 0;
+    }
+    rsa_public_key parsed;
+    if (!rsa_load_public_key_bytes(&parsed, key)) {
+        return 0;
+    }
+    crypto_bn input_bn;
+    if (!rsa_bn_from_bytes_checked(&input_bn, in, in_len)) {
+        return 0;
+    }
+    crypto_bn output_bn;
+    if (!rsa_public(&parsed, &output_bn, &input_bn)) {
+        return 0;
+    }
+    return rsa_bn_to_bytes_checked(&output_bn, out, out_len);
+}
+
+int rsa_private_bytes(const rsa_private_key_bytes *key, uint8_t *out, size_t out_len,
+                      const uint8_t *in, size_t in_len) {
+    if (!key || !out || !in) {
+        return 0;
+    }
+    if (key->n_len == 0 || key->n_len > RSA_MAX_BYTES || in_len == 0 || in_len > key->n_len ||
+        out_len < key->n_len) {
+        return 0;
+    }
+    rsa_private_key parsed;
+    if (!rsa_load_private_key_bytes(&parsed, key)) {
+        return 0;
+    }
+    crypto_bn input_bn;
+    if (!rsa_bn_from_bytes_checked(&input_bn, in, in_len)) {
+        return 0;
+    }
+    crypto_bn output_bn;
+    if (!rsa_private(&parsed, &output_bn, &input_bn)) {
+        return 0;
+    }
+    return rsa_bn_to_bytes_checked(&output_bn, out, out_len);
 }

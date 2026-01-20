@@ -7,6 +7,7 @@
 - **密钥生成**：`rsa_generate_key`
 - **公钥运算**：`rsa_public`（模幂运算）
 - **私钥运算**：`rsa_private`（CRT 运算）
+- **字节封装**：`rsa_public_bytes` / `rsa_private_bytes`（公私钥与输入输出使用 `uint8_t`）
 - **大数运算**：复用 `crypto_bn.c/h`
 
 ### 说明
@@ -14,7 +15,8 @@
 1. **密钥生成**：使用 Miller-Rabin 生成素数，默认公钥指数为 65537。
 2. **私钥格式**：包含 `n`、`d`、`p`、`q`、`dp`、`dq`、`qinv` 共 7 个大整数。
 3. **输入输出**：`rsa_public` / `rsa_private` 接受 `crypto_bn`，内部会对输入取模 `n`。
-4. **随机数来源**：优先读取 `/dev/urandom`，不可用时退化到 `rand()`。
+4. **字节接口**：`rsa_public_bytes` / `rsa_private_bytes` 使用 `rsa_public_key_bytes` / `rsa_private_key_bytes` 传递大整数，并按模长输出字节结果。
+5. **随机数来源**：优先读取 `/dev/urandom`，不可用时退化到 `rand()`。
 
 ## SM2
 
