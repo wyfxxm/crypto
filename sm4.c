@@ -1,5 +1,7 @@
 #include "sm4.h"
 
+#include <pthread.h>
+
 static const uint8_t SM4_SBOX[256] = {
     0xd6, 0x90, 0xe9, 0xfe, 0xcc, 0xe1, 0x3d, 0xb7, 0x16, 0xb6, 0x14, 0xc2, 0x28, 0xfb, 0x2c, 0x05,
     0x2b, 0x67, 0x9a, 0x76, 0x2a, 0xbe, 0x04, 0xc3, 0xaa, 0x44, 0x13, 0x26, 0x49, 0x86, 0x06, 0x99,
@@ -63,12 +65,9 @@ static uint32_t SM4_TK0[256];
 static uint32_t SM4_TK1[256];
 static uint32_t SM4_TK2[256];
 static uint32_t SM4_TK3[256];
-static int SM4_TABLES_READY = 0;
+static pthread_once_t SM4_TABLES_ONCE = PTHREAD_ONCE_INIT;
 
-static void sm4_init_tables(void) {
-    if (SM4_TABLES_READY) {
-        return;
-    }
+static void sm4_init_tables_once(void) {
     for (int i = 0; i < 256; ++i) {
         uint32_t s = SM4_SBOX[i];
         uint32_t v0 = s << 24;
@@ -84,7 +83,10 @@ static void sm4_init_tables(void) {
         SM4_TK2[i] = l_prime_transform(v2);
         SM4_TK3[i] = l_prime_transform(v3);
     }
-    SM4_TABLES_READY = 1;
+}
+
+static void sm4_init_tables(void) {
+    pthread_once(&SM4_TABLES_ONCE, sm4_init_tables_once);
 }
 
 static inline uint32_t sm4_t(uint32_t value) {
