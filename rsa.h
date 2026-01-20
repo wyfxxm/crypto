@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-#include "../bn/crypto_bn.h"
+#include "crypto_bn.h"
 
 #ifdef __cplusplus
 extern "C" {
